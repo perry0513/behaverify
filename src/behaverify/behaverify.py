@@ -19,6 +19,7 @@ from behaverify.dsl_to_haskell import dsl_to_haskell
 from behaverify.dsl_to_latex import dsl_to_latex
 from behaverify.dsl_to_nuxmv import dsl_to_nuxmv
 from behaverify.dsl_to_python import dsl_to_python
+from behaverify.dsl_to_uclid5 import dsl_to_uclid5
 from behaverify.counter_trace import counter_trace
 from behaverify.grid_world_draw.parse_nuxmv_output import handle_file as grid_world_draw_nuxmv_output
 from behaverify.grid_world_draw.parse_python_output import handle_file as grid_world_draw_python_output
@@ -464,6 +465,7 @@ Available modes:
   nuxmv     Generate nuXmv model and run formal verification
   python    Generate executable Python implementation
   trace     Visualize nuXmv counter-example traces
+  uclid5    Generate UCLID5 model for compositional verification
 
 Examples:
   behaverify nuxmv model.tree ./output --generate --ltl --nuxmv_path ../nuXmv
@@ -479,7 +481,7 @@ For detailed documentation: https://github.com/verivital/behaverify
     # - If no args or just --help/--version, show main help
     # - If valid mode with --help, let mode parser handle it
     effective_argv = argv if argv is not None else sys.argv[1:]
-    valid_modes = ('cpp', 'grid', 'gui', 'haskell', 'latex', 'nuxmv', 'python', 'trace')
+    valid_modes = ('cpp', 'grid', 'gui', 'haskell', 'latex', 'nuxmv', 'python', 'trace', 'uclid5')
 
     # Check if we should show main help (no mode specified, or --help/--version before mode)
     show_main_help = (
@@ -795,12 +797,42 @@ Examples:
         verify_location('trace', args.location, args.overwrite)
         # output_name = args.output_name if args.output_name is not None else os.path.splitext(os.path.basename(args.model_file))[0]
         counter_trace(metamodel_file, args.model_file, args.trace_file, os.path.join(args.location, 'trace'), args.do_not_trim, args.recursion_limit)
+    elif main_mode == 'uclid5':
+        arg_parser = argparse.ArgumentParser(
+            prog='behaverify uclid5',
+            description='Generate UCLID5 model for formal verification',
+            formatter_class=argparse.RawDescriptionHelpFormatter
+        )
+        arg_parser.add_argument('mode', help=argparse.SUPPRESS)
+        arg_parser.add_argument('model_file', help='Input .tree file')
+        arg_parser.add_argument('location', nargs='?', default='./',
+            help='Output directory (default: ./)')
+        arg_parser.add_argument('--output_name', type=str, default=None,
+            help='Custom output filename (default: derived from input filename)')
+        arg_parser.add_argument('--keep_last_stage', action='store_true',
+            help='Disable variable stage optimization')
+        arg_parser.add_argument('--do_not_trim', action='store_true',
+            help='Disable node trimming optimization')
+        arg_parser.add_argument('--recursion_limit', type=int, default=0,
+            help='Increase Python recursion limit for complex models (default: 0 = no change)')
+        arg_parser.add_argument('--no_checks', action='store_true',
+            help='Skip grammar validation (faster but risky)')
+        arg_parser.add_argument('--contracts', type=str, default=None, metavar='FILE',
+            help='JSON file with neural network contracts (assume/guarantee)')
+        arg_parser.add_argument('--overwrite', action='store_true',
+            help='Overwrite existing output files/directories')
+        args = arg_parser.parse_args(argv)
+        verify_input(args.model_file)
+        verify_location('uclid5', args.location, args.overwrite)
+        output_name = args.output_name if args.output_name is not None else os.path.splitext(os.path.basename(args.model_file))[0]
+        output_file = os.path.join(args.location, 'uclid5', output_name + '.ucl')
+        dsl_to_uclid5(metamodel_file, args.model_file, output_file, args.keep_last_stage, args.do_not_trim, args.recursion_limit, args.no_checks, args.contracts)
     elif main_mode == 'gui':
         gui_main()
     else:
         error_exit(
             f"Unknown mode: '{main_mode}'",
-            "Available modes: cpp, grid, gui, haskell, latex, nuxmv, python, trace\n"
+            "Available modes: cpp, grid, gui, haskell, latex, nuxmv, python, trace, uclid5\n"
             "Use 'behaverify <mode> --help' for mode-specific options."
         )
 
