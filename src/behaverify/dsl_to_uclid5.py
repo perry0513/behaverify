@@ -258,6 +258,9 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
 
     def format_variable(variable_obj, misc_args):
         var_key = variable_reference(variable_obj.name, is_local(variable_obj), misc_args['node_name'])
+        # Inline-substitute DEFINE variables with their expression
+        if var_key in define_exprs:
+            return define_exprs[var_key]
         return format_variable_by_key(var_key, misc_args)
 
     def format_variable_by_key(var_key, misc_args):
@@ -1238,6 +1241,33 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
             prefix = type_prefix.get(node['type'], node['type'])
             proc_names[nn] = prefix + '_' + nn
 
+        # Build inline expressions for DEFINE variables (substituted at every reference)
+        nonlocal define_exprs
+        misc_def = create_misc_args({}, None, False, None, None, False, False)
+        for variable in model.variables:
+            if variable.model_as != 'DEFINE':
+                continue
+            if hasattr(variable, 'assign') and variable.assign is not None:
+                vals = []
+                for v in variable.assign.default_result.values:
+                    vals.extend(format_code(v, misc_def))
+                if len(variable.assign.case_results) > 0:
+                    result = vals[0] if vals else '0'
+                    cases = []
+                    for cr in variable.assign.case_results:
+                        cond = format_code(cr.condition, misc_def)[0]
+                        cr_vals = []
+                        for cv in cr.values:
+                            cr_vals.extend(format_code(cv, misc_def))
+                        cases.append((cond, cr_vals[0] if cr_vals else '0'))
+                    cases.append(('true', result))
+                    expr = cases[-1][1]
+                    for i in range(len(cases) - 2, -1, -1):
+                        expr = '(if (' + cases[i][0] + ') then (' + cases[i][1] + ') else (' + expr + '))'
+                    define_exprs[variable.name] = expr
+                else:
+                    define_exprs[variable.name] = vals[0] if vals else '0'
+
         # Register every leaf definition — each produces exactly one procedure.
         for check_def in model.check_nodes:
             args = [(a.argument_name, a.argument_type) for a in check_def.arguments] if check_def.arguments else []
@@ -1345,29 +1375,7 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
             var_type = get_var_type(variable)
             scope = variable.var_type if hasattr(variable, 'var_type') and variable.var_type else 'bl'
             if variable.model_as == 'DEFINE':
-                # DEFINE variables: use define
-                misc_def = create_misc_args({}, None, False, None, None, False, False)
-                if hasattr(variable, 'assign') and variable.assign is not None:
-                    vals = []
-                    for v in variable.assign.default_result.values:
-                        vals.extend(format_code(v, misc_def))
-                    if len(variable.assign.case_results) > 0:
-                        # Build if-then-else
-                        result = vals[0] if vals else '0'
-                        cases = []
-                        for cr in variable.assign.case_results:
-                            cond = format_code(cr.condition, misc_def)[0]
-                            cr_vals = []
-                            for v in cr.values:
-                                cr_vals.extend(format_code(v, misc_def))
-                            cases.append((cond, cr_vals[0] if cr_vals else '0'))
-                        cases.append(('true', result))
-                        expr = cases[-1][1]
-                        for i in range(len(cases) - 2, -1, -1):
-                            expr = '(if (' + cases[i][0] + ') then (' + cases[i][1] + ') else (' + expr + '))'
-                        out.append('  define ' + var_name + ' : ' + var_type + ' = ' + expr + ';  // DEFINE (' + scope + ')')
-                    else:
-                        out.append('  define ' + var_name + ' : ' + var_type + ' = ' + (vals[0] if vals else '0') + ';  // DEFINE (' + scope + ')')
+                # DEFINE variables are inlined at every reference — no declaration needed
                 continue
             if variable.model_as == 'NEURAL':
                 neural_comment = '  // NEURAL ' + variable.neural_mode + ' (' + scope + ')'
@@ -1793,6 +1801,7 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
     delayed_env_writes = set()
     node_modifies = {}
     local_vars_by_def = {}
+    define_exprs = {}  # DEFINE var name -> inline expression string
 
     at_refs = collect_all_at_refs(model.specifications)
     for (vname, k) in at_refs:
