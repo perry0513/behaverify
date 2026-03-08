@@ -697,15 +697,14 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
     # Map node name -> procedure name prefix based on node type
     proc_names = {}  # populated in write_uclid5 after nodes are ordered
 
-    # Parameterized procedure support:
-    # parameterized_defs: def_name -> [(arg_name, arg_type), ...]
-    # node_arg_values: node_instance_name -> {arg_name: actual_value, ...}
-    # node_def_name: node_instance_name -> def_name (for nodes that are instances of parameterized defs)
-    # parameterized_emitted: set of def_names already emitted as procedures
+    # Shared procedure support:
+    # Each leaf definition (check/action/env_check) produces exactly one procedure.
+    # parameterized_defs: def_name -> [(arg_name, arg_type), ...] — formal params (empty if none)
+    # node_def_name: instance_name -> def_name (maps every instance to its definition)
+    # node_arg_values: instance_name -> {arg_name: actual_value, ...} (actual arg values per instance)
     parameterized_defs = {}
     node_arg_values = {}
     node_def_name = {}
-    parameterized_emitted = set()
 
     def get_proc_name(node_name):
         '''Get the full procedure name for a node.'''
@@ -1150,12 +1149,17 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
     # ---- Process check conditions ----
 
     def process_check_conditions(all_statements):
-        '''Format check node conditions and store in node dict.'''
+        '''Format check node conditions once per definition, store on the def node.'''
+        defs_formatted = set()
         for (node_name, arg_pairs, stmt_type, stmt) in all_statements:
             if stmt_type != 'check':
                 continue
+            def_name = nodes[node_name].get('custom_type', None)
+            if not def_name or def_name in defs_formatted:
+                continue
+            defs_formatted.add(def_name)
 
-            # Always format with actual argument values
+            # Temporarily add argument constants for formatting
             for aname in arg_pairs:
                 if arg_pairs[aname] in variables:
                     variables[aname] = variables[arg_pairs[aname]]
@@ -1172,23 +1176,15 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
                 else:
                     constants.pop(aname)
 
-            def_name = nodes[node_name].get('custom_type', None)
-            is_parameterized = def_name and def_name in parameterized_defs
-
-            if is_parameterized:
-                if def_name not in parameterized_emitted:
-                    # Create synthetic def node; replace literal arg values with param names
-                    if def_name not in nodes:
-                        nodes[def_name] = dict(nodes[node_name])
-                        nodes[def_name]['name'] = def_name
-                    param_formatted = formatted
-                    for aname in arg_pairs:
-                        actual_val = str(arg_pairs[aname])
-                        param_formatted = param_formatted.replace(actual_val, aname)
-                    nodes[def_name]['formatted_condition'] = param_formatted
-                    parameterized_emitted.add(def_name)
-            else:
-                nodes[node_name]['formatted_condition'] = formatted
+            # Create synthetic def node and store formatted condition
+            if def_name not in nodes:
+                nodes[def_name] = dict(nodes[node_name])
+                nodes[def_name]['name'] = def_name
+            param_formatted = formatted
+            for aname in arg_pairs:
+                actual_val = str(arg_pairs[aname])
+                param_formatted = param_formatted.replace(actual_val, aname)
+            nodes[def_name]['formatted_condition'] = param_formatted
 
     # ---- Handle specifications ----
 
@@ -1242,23 +1238,19 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
             prefix = type_prefix.get(node['type'], node['type'])
             proc_names[nn] = prefix + '_' + nn
 
-        # Build parameterized procedure support
-        # Collect leaf definitions with arguments from model
+        # Register every leaf definition — each produces exactly one procedure.
         for check_def in model.check_nodes:
-            if check_def.arguments:
-                parameterized_defs[check_def.name] = [
-                    (a.argument_name, a.argument_type) for a in check_def.arguments]
-                proc_names[check_def.name] = 'check_' + check_def.name
+            args = [(a.argument_name, a.argument_type) for a in check_def.arguments] if check_def.arguments else []
+            parameterized_defs[check_def.name] = args
+            proc_names[check_def.name] = 'check_' + check_def.name
         for env_check_def in model.environment_checks:
-            if env_check_def.arguments:
-                parameterized_defs[env_check_def.name] = [
-                    (a.argument_name, a.argument_type) for a in env_check_def.arguments]
-                proc_names[env_check_def.name] = 'env_check_' + env_check_def.name
+            args = [(a.argument_name, a.argument_type) for a in env_check_def.arguments] if env_check_def.arguments else []
+            parameterized_defs[env_check_def.name] = args
+            proc_names[env_check_def.name] = 'env_check_' + env_check_def.name
         for action_def in model.action_nodes:
-            if action_def.arguments:
-                parameterized_defs[action_def.name] = [
-                    (a.argument_name, a.argument_type) for a in action_def.arguments]
-                proc_names[action_def.name] = 'action_' + action_def.name
+            args = [(a.argument_name, a.argument_type) for a in action_def.arguments] if action_def.arguments else []
+            parameterized_defs[action_def.name] = args
+            proc_names[action_def.name] = 'action_' + action_def.name
 
         # Build local_vars_by_def for action-local variables
         nonlocal local_vars_by_def
@@ -1268,46 +1260,40 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
                 local_vars_by_def[action_def.name] = [
                     (lv.name, get_var_type(lv)) for lv in action_def.local_variables]
 
-        # Map node instances to their definitions and argument values
+        # Map every leaf instance to its definition and argument values
         for (snn, arg_pairs, stmt_type, stmt) in all_statements:
-            if arg_pairs and snn in nodes:
+            if snn in nodes:
                 def_name = nodes[snn].get('custom_type', None)
                 if def_name and def_name in parameterized_defs:
                     node_def_name[snn] = def_name
-                    node_arg_values[snn] = dict(arg_pairs)
+                    node_arg_values[snn] = dict(arg_pairs) if arg_pairs else {}
 
-        # Process check conditions
+        # Process check conditions (once per definition)
         process_check_conditions(all_statements)
-
-        # Build global write counter for snapshot insertion
         build_write_counter_map(ordered_node_list, all_statements)
 
-        # Process action statements into procedure body lines
-        parameterized_action_emitted = set()
-        for node in ordered_node_list:
-            if node['category'] == 'leaf' and node['type'] == 'action':
-                nn = node['name']
-                def_name = node.get('custom_type', None)
-                if def_name and def_name in parameterized_defs:
-                    if def_name not in parameterized_action_emitted:
-                        # Format with actual values, then replace with param names
-                        if def_name not in nodes:
-                            nodes[def_name] = dict(node)
-                            nodes[def_name]['name'] = def_name
-                        raw_stmts = process_action_statements(nn, all_statements)
-                        # Replace literal arg values with param names, and instance name with def name
-                        arg_pairs = node_arg_values.get(nn, {})
-                        param_stmts = []
-                        for line in raw_stmts:
-                            new_line = line.replace('s__' + nn, 's__' + def_name)
-                            for aname in arg_pairs:
-                                actual_val = str(arg_pairs[aname])
-                                new_line = new_line.replace(actual_val, aname)
-                            param_stmts.append(new_line)
-                        nodes[def_name]['proc_statements'] = param_stmts
-                        parameterized_action_emitted.add(def_name)
-                else:
-                    node['proc_statements'] = process_action_statements(nn, all_statements)
+        # Process action statements (once per definition)
+        for action_def in model.action_nodes:
+            def_name = action_def.name
+            first_instance = None
+            for node in ordered_node_list:
+                if node.get('custom_type', None) == def_name:
+                    first_instance = node['name']
+                    break
+            if first_instance is None:
+                continue
+            if def_name not in nodes:
+                nodes[def_name] = dict(nodes[first_instance])
+                nodes[def_name]['name'] = def_name
+            raw_stmts = process_action_statements(first_instance, all_statements)
+            arg_pairs = node_arg_values.get(first_instance, {})
+            param_stmts = []
+            for line in raw_stmts:
+                new_line = line.replace('s__' + first_instance, 's__' + def_name)
+                for aname in arg_pairs:
+                    new_line = new_line.replace(str(arg_pairs[aname]), aname)
+                param_stmts.append(new_line)
+            nodes[def_name]['proc_statements'] = param_stmts
 
         # Compute modifies sets for all procedures
         nonlocal node_modifies
@@ -1455,20 +1441,23 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
         out.append('  // Composite nodes: sequence (stop on non-success), selector (stop on non-failure),')
         out.append('  //   parallel (run all children, aggregate by policy).')
         out.append('  // Decorator nodes: inverter, X_is_Y, repeat, one_shot.')
-        emitted_parameterized = set()
+        # Emit leaf procedures (one per definition)
+        leaf_defs_emitted = set()
         for node in reversed(ordered_node_list):
             nn = node['name']
-            def_name = node.get('custom_type', None)
-            if def_name and def_name in parameterized_defs:
-                if def_name in emitted_parameterized:
-                    continue  # Already emitted the shared procedure
-                emitted_parameterized.add(def_name)
-                # Generate the shared parameterized procedure
-                def_node = nodes[def_name]
-                proc_lines = generate_node_procedure(def_node, formal_params=parameterized_defs[def_name])
+            if node['category'] == 'leaf':
+                def_name = node.get('custom_type', None)
+                if def_name and def_name in leaf_defs_emitted:
+                    continue
+                if def_name:
+                    leaf_defs_emitted.add(def_name)
+                def_node = nodes[def_name] if def_name else node
+                formal_params = parameterized_defs.get(def_name, []) if def_name else []
+                proc_lines = generate_node_procedure(def_node, formal_params=formal_params)
                 out.extend(proc_lines)
                 out.append('')
             else:
+                # Composite/decorator nodes: one procedure per instance
                 proc_lines = generate_node_procedure(node)
                 out.extend(proc_lines)
                 out.append('')
