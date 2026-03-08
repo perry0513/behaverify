@@ -253,7 +253,8 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
     # ---- Variable reference (procedure-based: plain names, no staging) ----
 
     def variable_reference(base_name, _is_local_, node_name):
-        return (node_name + '_DOT_' + base_name) if _is_local_ else base_name
+        # Local variables are procedure-local in UCLID5, so use bare name
+        return base_name
 
     def format_variable(variable_obj, misc_args):
         var_key = variable_reference(variable_obj.name, is_local(variable_obj), misc_args['node_name'])
@@ -650,14 +651,16 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
             mods = set()
 
             if node['category'] == 'leaf' and node['type'] in ('action',):
-                # Collect direct writes
+                # Collect direct writes (skip local vars — they are procedure-local)
                 for (snn, _, stmt_type, stmt) in all_statements:
                     if snn != nn or stmt_type != 'statement':
                         continue
                     if stmt.variable_statement is not None:
                         vs = stmt.variable_statement
                         var_obj = vs.variable if hasattr(vs, 'variable') else vs
-                        vname = variable_reference(var_obj.name, is_local(var_obj), nn)
+                        if is_local(var_obj):
+                            continue
+                        vname = variable_reference(var_obj.name, False, nn)
                         mods.add(vname)
                         # Snapshot vars
                         base_name = var_obj.name
@@ -780,6 +783,12 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
         mods = node_modifies.get(nn, set())
         lines = proc_header(nn, mods, 'Action node: updates state variables.',
                             formal_params=formal_params)
+
+        # Emit local variable declarations (procedure-local, fresh each invocation)
+        def_name = node.get('custom_type', nn)
+        if def_name in local_vars_by_def:
+            for (lv_name, lv_type) in local_vars_by_def[def_name]:
+                lines.append(BI + 'var ' + lv_name + ' : ' + lv_type + ';')
 
         if 'proc_statements' in node:
             for stmt_line in node['proc_statements']:
@@ -1250,6 +1259,15 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
                 parameterized_defs[action_def.name] = [
                     (a.argument_name, a.argument_type) for a in action_def.arguments]
                 proc_names[action_def.name] = 'action_' + action_def.name
+
+        # Build local_vars_by_def for action-local variables
+        nonlocal local_vars_by_def
+        local_vars_by_def = {}
+        for action_def in model.action_nodes:
+            if action_def.local_variables:
+                local_vars_by_def[action_def.name] = [
+                    (lv.name, get_var_type(lv)) for lv in action_def.local_variables]
+
         # Map node instances to their definitions and argument values
         for (snn, arg_pairs, stmt_type, stmt) in all_statements:
             if arg_pairs and snn in nodes:
@@ -1378,14 +1396,6 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
             else:
                 out.append('  var ' + var_name + ' : ' + var_type + ';' + var_comment)
         out.append('')
-
-        # Local variables (promoted to module scope for UCLID5 procedures)
-        if local_variables:
-            out.append('  // Local variables (scoped to individual action nodes, promoted to module level)')
-            for (node_name_lv, lv) in local_variables:
-                lv_name = node_name_lv + '_DOT_' + lv.name
-                lv_type = get_var_type(lv)
-                out.append('  var ' + lv_name + ' : ' + lv_type + ';  // local to ' + node_name_lv)
 
         # Snapshot variables (for at-k references in specs)
         if needed_snapshots:
@@ -1793,6 +1803,7 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
     env_snapshot_insert_points = {}
     delayed_env_writes = set()
     node_modifies = {}
+    local_vars_by_def = {}
 
     at_refs = collect_all_at_refs(model.specifications)
     for (vname, k) in at_refs:
