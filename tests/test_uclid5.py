@@ -170,8 +170,8 @@ class TestUclid5NodeStructure:
         dsl_to_uclid5(metamodel_file, collatz_tree, output_file, False, False, 0, False)
         with open(output_file, 'r') as f:
             content = f.read()
-        assert 's__a = success;' in content
-        assert 's__a = failure;' in content
+        assert 's__a = if (' in content
+        assert 'then success else failure;' in content
 
 
 class TestUclid5ParameterizedProcedures:

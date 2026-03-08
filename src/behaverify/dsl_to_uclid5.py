@@ -764,27 +764,16 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
         lines.append(PI + '{')
         return lines
 
-    def generate_check_procedure(node, formal_params=None):
-        '''Generate a check node procedure.'''
+    def generate_leaf_procedure(node, formal_params=None):
+        '''Generate a leaf node (check or action) procedure.'''
         nn = node['name']
         mods = node_modifies.get(nn, set())
-        lines = proc_header(nn, mods, 'Check node: tests a condition, returns success or failure.',
-                            formal_params=formal_params)
-        condition_str = node.get('formatted_condition', 'true')
-        lines.append(BI + 'if (' + condition_str + ') {')
-        lines.append(BI2 + 's__' + nn + ' = success;')
-        lines.append(BI + '} else {')
-        lines.append(BI2 + 's__' + nn + ' = failure;')
-        lines.append(BI + '}')
-        lines.append(PI + '}')
-        return lines
-
-    def generate_action_procedure(node, formal_params=None):
-        '''Generate an action node procedure.'''
-        nn = node['name']
-        mods = node_modifies.get(nn, set())
-        lines = proc_header(nn, mods, 'Action node: updates state variables.',
-                            formal_params=formal_params)
+        node_type = node.get('type', 'leaf')
+        if node_type in ('check', 'environment_check'):
+            comment = 'Check node: tests a condition, returns success or failure.'
+        else:
+            comment = 'Action node: updates state variables.'
+        lines = proc_header(nn, mods, comment, formal_params=formal_params)
 
         # Emit local variable declarations (procedure-local, fresh each invocation)
         def_name = node.get('custom_type', nn)
@@ -995,10 +984,7 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
     def generate_node_procedure(node, formal_params=None):
         '''Dispatch to the appropriate procedure generator.'''
         if node['category'] == 'leaf':
-            if node['type'] in ('check', 'environment_check'):
-                return generate_check_procedure(node, formal_params=formal_params)
-            elif node['type'] == 'action':
-                return generate_action_procedure(node, formal_params=formal_params)
+            return generate_leaf_procedure(node, formal_params=formal_params)
         elif node['category'] == 'composite':
             if node['type'] == 'sequence':
                 return generate_sequence_procedure(node)
@@ -1179,7 +1165,7 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
                 else:
                     constants.pop(aname)
 
-            # Create synthetic def node and store formatted condition
+            # Create synthetic def node and store proc_statements
             if def_name not in nodes:
                 nodes[def_name] = dict(nodes[node_name])
                 nodes[def_name]['name'] = def_name
@@ -1187,7 +1173,9 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
             for aname in arg_pairs:
                 actual_val = str(arg_pairs[aname])
                 param_formatted = param_formatted.replace(actual_val, aname)
-            nodes[def_name]['formatted_condition'] = param_formatted
+            nodes[def_name]['proc_statements'] = [
+                's__' + def_name + ' = if (' + param_formatted + ') then success else failure;',
+            ]
 
     # ---- Handle specifications ----
 
