@@ -1615,7 +1615,13 @@ def dsl_to_uclid5(metamodel_file, model_file, output_file, keep_last_stage,
         # FROZENVAR identity
         for variable in model.variables:
             if variable.model_as == 'FROZENVAR' and not is_local(variable):
-                out.append('    ' + variable.name + '\' = ' + variable.name + ';')
+                if is_array(variable):
+                    arr_size = variable_array_size(variable, declared_enumerations, nodes, variables, constants, {})
+                    for i in range(arr_size):
+                        elem = variable.name + '_index_' + str(i)
+                        out.append('    ' + elem + '\' = ' + elem + ';')
+                else:
+                    out.append('    ' + variable.name + '\' = ' + variable.name + ';')
         out.append('  }')
         out.append('')
 
